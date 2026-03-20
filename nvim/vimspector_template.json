@@ -1,0 +1,78 @@
+{
+	"configurations": {
+		"launch-current-project": {
+			"adapter": "vscode-cpptools",
+			"configuration": {
+				"type":    "cppdbg",
+				"request": "launch",
+				"program": "${workspaceRoot}/<可执行文件路径>",
+				"args": [],
+				"cwd": "${workspaceRoot}",
+				"environment": [],
+				"externalConsole": true,
+				"stopAtEntry": true,
+				"MIMode": "gdb",
+				"breakpointers": {
+					"exception": {
+						"cpp_throw": "Y",
+						"cpp_catch": "N"
+					}
+				}
+			}
+		},
+		"attach-current-file": {
+			"adapter": "vscode-cpptools",
+			"configuration": {
+				"type": "cppdbg",
+				"request": "attach",
+				"program": "${fileDirname}/${fileBasenameNoExtension}",
+				"MIMode": "gdb",
+				"breakpointers": {
+					"exception": {
+						"cpp_throw": "Y",
+						"cpp_catch": "N"
+					}
+				}
+			}
+		},
+		"attach-current-project": {
+			"adapter": "vscode-cpptools",
+			"configuration": {
+				"variables": {
+					"ProgramName": {
+						"shell": ["basename", "${workspaceRoot}"]
+					},
+					"ProgramPath": "${workspaceRoot}/可执行文件路径"
+				},
+				"type": "cppdbg",
+				"request": "attach",
+				"program": "${ProgramPath}",
+				"MIMode": "gdb",
+				"breakpointers": {
+					"exception": {
+						"cpp_throw": "Y",
+						"cpp_catch": "N"
+					}
+				}
+			}
+		},
+		"python_file": {
+			"adapter": "debugpy",
+			"default": true,
+			"configuration": {
+				"request": "launch",
+				"program": "${workspaceRoot}/filename.py",
+				"cwd": "${workspaceRoot}",
+				"stopOnEntry": true
+			},
+			"breakpoints": {
+				"exception": {
+					"raised": "N",
+					"uncaught": "",
+					"userUnhandled": ""
+				}
+			}
+		}
+	}
+}
+
