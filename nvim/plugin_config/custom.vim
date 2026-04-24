@@ -120,13 +120,16 @@ endif
 
 set nobackup
 set nowritebackup
+" On slow HDD-backed ext4, waiting for fsync/journal commit makes :write stall.
+" Let the kernel flush asynchronously to keep save interactive.
+set nofsync
 set updatetime=100
 set signcolumn=yes
 set showcmd
 set noshowmode
 set nu
 set autoread
-set autowriteall
+set noautowriteall
 
 " Auto-reload files changed externally (e.g. by Claude Code)
 autocmd FocusGained,BufEnter,CursorHold,CursorHoldI * if mode() != 'c' | checktime | endif
@@ -143,7 +146,9 @@ set shiftwidth=4
 set softtabstop=4
 set expandtab
 set nocompatible
-set nowrap
+set wrap
+set linebreak
+set breakindent
 set ruler
 set rulerformat=%15(%c%V\ %p%%%)
 set smartindent
@@ -156,12 +161,12 @@ set enc=utf-8
 let &termencoding=&encoding
 set fencs=utf-8,ucs-bom,gb18030
 set mouse=a
-set timeoutlen=300
+set timeoutlen=500
 
 set foldlevelstart=99
 set foldlevel=99
 
-set undofile
+set noundofile
 
 set wildmode=longest,list,full,lastused
 set noswapfile
@@ -188,5 +193,3 @@ if exists("g:neovide")
     let g:neovide_cursor_antialiasing = v:true
     let g:neovide_cursor_unfocused_outline_width = 0.125
 endif
-
-

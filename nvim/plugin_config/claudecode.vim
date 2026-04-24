@@ -39,8 +39,12 @@ nnoremap <leader>cb <cmd>ClaudeCodeAdd %<cr>
 nnoremap <leader>ca <cmd>ClaudeCodeDiffAccept<cr>
 nnoremap <leader>cd <cmd>ClaudeCodeDiffDeny<cr>
 
-" 终端模式快捷键：用 Ctrl-h/j/k/l 在终端和编辑器窗口之间切换
-tnoremap <C-h> <C-\><C-n><C-w>h
-tnoremap <C-j> <C-\><C-n><C-w>j
-tnoremap <C-k> <C-\><C-n><C-w>k
-tnoremap <C-l> <C-\><C-n><C-w>l
+" 终端模式快捷键：保留 Ctrl-h/j/k/l 给终端程序，窗口切换改用 Alt-h/j/k/l
+silent! tunmap <C-h>
+silent! tunmap <C-j>
+silent! tunmap <C-k>
+silent! tunmap <C-l>
+tnoremap <A-h> <C-\><C-n><C-w>h
+tnoremap <A-j> <C-\><C-n><C-w>j
+tnoremap <A-k> <C-\><C-n><C-w>k
+tnoremap <A-l> <C-\><C-n><C-w>l

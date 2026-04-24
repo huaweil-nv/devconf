@@ -6,8 +6,9 @@ require("auto-save").setup {
         dim = 0.18,
         cleaning_interval = 1250,
     },
-    -- VSCode 风格：失焦、切换buffer、离开insert模式时自动保存
-    trigger_events = {"FocusLost", "BufLeave", "InsertLeave", "TextChanged"},
+    -- VSCode 风格：失焦、切换buffer时自动保存
+    -- 注意：不要用 InsertLeave/TextChanged，会导致 jj 退出 insert mode 时卡顿
+    trigger_events = {"FocusLost", "BufLeave"},
     condition = function(buf)
         local fn = vim.fn
         local utils = require("auto-save.utils.data")

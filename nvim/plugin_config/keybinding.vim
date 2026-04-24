@@ -4,7 +4,7 @@ inoremap <silent> jj <ESC>
 inoremap <silent> kk <ESC>
 " inoremap <silent> oo <ESC>o
 " inoremap <silent> OO <ESC>O
-inoremap <silent> <C-j> <Down>
+silent! iunmap <C-j>
 inoremap <silent> <C-k> <Up>
 inoremap <silent> <C-h> <Left>
 inoremap <silent> <C-l> <Right>
