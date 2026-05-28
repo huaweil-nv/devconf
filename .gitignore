@@ -4,3 +4,5 @@ tags
 coc-settings.json
 *.gpg
 *~
+.cudaq-dev/
+.config/cudaq-dev/

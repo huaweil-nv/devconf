@@ -1,0 +1,457 @@
+#!/usr/bin/env bash
+# Manage a CUDA-Q development container.
+#
+# Machine-local settings can live in:
+#   ~/.config/cudaq-dev/config
+#
+# Common overrides:
+#   CUDAQ_REPO=/path/to/cuda-quantum
+#   CUDAQ_SKILLS_REPO=/path/to/my-skills
+#   CUDAQ_CONTAINER_REPO=/workspaces/cuda-quantum
+#   CUDAQ_DEV_GPUS=auto|all|none
+
+set -euo pipefail
+
+script_source="${BASH_SOURCE[0]}"
+while [ -L "$script_source" ]; do
+    script_dir="$(cd -P "$(dirname "$script_source")" >/dev/null 2>&1 && pwd)"
+    script_source="$(readlink "$script_source")"
+    [[ "$script_source" == /* ]] || script_source="$script_dir/$script_source"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$script_source")" >/dev/null 2>&1 && pwd)"
+DEVCONF_ROOT="$(cd "$SCRIPT_DIR/.." >/dev/null 2>&1 && pwd)"
+
+CONFIG_FILE="${CUDAQ_DEV_CONFIG:-$HOME/.config/cudaq-dev/config}"
+if [ -f "$CONFIG_FILE" ]; then
+    # shellcheck source=/dev/null
+    . "$CONFIG_FILE"
+fi
+
+: "${CUDAQ_IMAGE:=cudaq-dev:cu13}"
+: "${CUDAQ_BASE_IMAGE:=ghcr.io/nvidia/cuda-quantum-devcontainer:cu13.0-gcc12-main}"
+: "${CUDAQ_DOCKERFILE:=docker/build/cudaq.dev.Dockerfile}"
+: "${CUDAQ_STATE_DIR:=$HOME/.cudaq-dev}"
+: "${CUDAQ_CONTAINER_NAME:=cudaq-dev}"
+: "${CUDAQ_CONTAINER_REPO:=}"
+: "${CUDAQ_DEV_GPUS:=auto}"
+: "${CUDAQ_SKILLS_REPO:=$HOME/projects/my-skills}"
+: "${CUDAQ_BUG_HUNTER_DIR:=$CUDAQ_SKILLS_REPO/tools/bug-hunter}"
+: "${CUDAQ_MOUNT_CLAUDE:=auto}"
+: "${CUDAQ_MOUNT_CURSOR:=auto}"
+: "${CUDAQ_INSTALL_CLAUDE:=auto}"
+: "${CUDAQ_INSTALL_BUG_HUNTER:=auto}"
+
+die() {
+    echo "cudaq-dev: $*" >&2
+    exit 1
+}
+
+warn() {
+    echo "cudaq-dev: warning: $*" >&2
+}
+
+lower() {
+    local value="$1"
+    printf '%s\n' "${value,,}"
+}
+
+enabled() {
+    case "$(lower "$1")" in
+        1|true|yes|y|on|all|always) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+disabled() {
+    case "$(lower "$1")" in
+        0|false|no|n|off|none|never) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+has_cudaq_dockerfile() {
+    [ -f "$1/docker/build/cudaq.dev.Dockerfile" ]
+}
+
+resolve_cudaq_repo() {
+    if [ -n "${CUDAQ_REPO:-}" ]; then
+        (cd "$CUDAQ_REPO" >/dev/null 2>&1 && pwd) || return 1
+        return 0
+    fi
+
+    local git_root=""
+    git_root="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || true)"
+
+    local candidates=(
+        "$PWD"
+        "$git_root"
+        "$DEVCONF_ROOT/../cudaq-commit/cuda-quantum"
+        "$HOME/projects/cudaq-commit/cuda-quantum"
+        "$HOME/projects/cuda-quantum"
+        "$HOME/cuda-quantum"
+    )
+
+    local candidate
+    for candidate in "${candidates[@]}"; do
+        [ -n "$candidate" ] || continue
+        if has_cudaq_dockerfile "$candidate"; then
+            (cd "$candidate" >/dev/null 2>&1 && pwd)
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+require_cudaq_repo() {
+    local repo
+    repo="$(resolve_cudaq_repo)" || die "CUDA-Q repo not found. Set CUDAQ_REPO in $CONFIG_FILE."
+    has_cudaq_dockerfile "$repo" || die "not a CUDA-Q checkout: $repo"
+    printf '%s\n' "$repo"
+}
+
+dockerfile_path() {
+    local repo="$1"
+    if [[ "$CUDAQ_DOCKERFILE" == /* ]]; then
+        printf '%s\n' "$CUDAQ_DOCKERFILE"
+    else
+        printf '%s/%s\n' "$repo" "$CUDAQ_DOCKERFILE"
+    fi
+}
+
+container_repo_path() {
+    local repo="$1"
+    if [ -n "$CUDAQ_CONTAINER_REPO" ]; then
+        if [ -d "$CUDAQ_CONTAINER_REPO" ]; then
+            (cd "$CUDAQ_CONTAINER_REPO" >/dev/null 2>&1 && pwd)
+            return 0
+        fi
+        printf '%s\n' "$CUDAQ_CONTAINER_REPO"
+    else
+        printf '%s\n' "$repo"
+    fi
+}
+
+require_docker() {
+    command -v docker >/dev/null 2>&1 || die "docker is not installed or not in PATH"
+}
+
+gpu_args() {
+    case "$(lower "$CUDAQ_DEV_GPUS")" in
+        auto)
+            if docker info --format '{{json .Runtimes}}' 2>/dev/null | grep -q '"nvidia"'; then
+                printf '%s\0%s\0' --gpus all
+            fi
+            ;;
+        all|1|true|yes|y|on)
+            printf '%s\0%s\0' --gpus all
+            ;;
+        none|0|false|no|n|off)
+            ;;
+        *)
+            printf '%s\0%s\0' --gpus "$CUDAQ_DEV_GPUS"
+            ;;
+    esac
+}
+
+should_install_bug_hunter() {
+    if enabled "$CUDAQ_INSTALL_BUG_HUNTER"; then
+        return 0
+    fi
+    if disabled "$CUDAQ_INSTALL_BUG_HUNTER"; then
+        return 1
+    fi
+    [ -d "$CUDAQ_BUG_HUNTER_DIR" ]
+}
+
+cmd_build() {
+    require_docker
+
+    local repo dockerfile
+    repo="$(require_cudaq_repo)"
+    dockerfile="$(dockerfile_path "$repo")"
+    [ -f "$dockerfile" ] || die "Dockerfile not found: $dockerfile"
+
+    cd "$repo"
+    echo ">>> docker build $CUDAQ_IMAGE (base=$CUDAQ_BASE_IMAGE)"
+    docker build \
+        -t "$CUDAQ_IMAGE" \
+        -f "$dockerfile" \
+        --build-arg base_image="$CUDAQ_BASE_IMAGE" \
+        .
+}
+
+cmd_up() {
+    require_docker
+
+    local name="${1:-$CUDAQ_CONTAINER_NAME}"
+    local repo container_repo
+    repo="$(require_cudaq_repo)"
+    container_repo="$(container_repo_path "$repo")"
+
+    if docker ps -a --format '{{.Names}}' | grep -qx "$name"; then
+        echo "Container '$name' already exists. Remove it with: cudaq-dev rm $name" >&2
+        echo "Or pick another name:                  cudaq-dev up <name>" >&2
+        return 1
+    fi
+    if ! docker image inspect "$CUDAQ_IMAGE" >/dev/null 2>&1; then
+        echo "Image $CUDAQ_IMAGE not found. Build it first: cudaq-dev build" >&2
+        return 1
+    fi
+
+    mkdir -p \
+        "$CUDAQ_STATE_DIR/home/.config" \
+        "$CUDAQ_STATE_DIR/home/.config/cursor" \
+        "$CUDAQ_STATE_DIR/home/.local/bin" \
+        "$CUDAQ_STATE_DIR/home/.local/share" \
+        "$CUDAQ_STATE_DIR/home/.local/share/cursor-agent" \
+        "$CUDAQ_STATE_DIR/ccache"
+
+    local mount_args=(
+        --mount "type=bind,source=$repo,target=$container_repo"
+        --mount "type=bind,source=$CUDAQ_STATE_DIR/home,target=/devhome"
+        --mount "type=bind,source=$CUDAQ_STATE_DIR/ccache,target=/devccache"
+    )
+
+    if ! disabled "$CUDAQ_MOUNT_CLAUDE"; then
+        if [ -d "$HOME/.claude" ]; then
+            mount_args+=(--mount "type=bind,source=$HOME/.claude,target=/devhome/.claude")
+        elif enabled "$CUDAQ_MOUNT_CLAUDE"; then
+            warn "requested Claude mount, but $HOME/.claude does not exist"
+        fi
+
+        if [ -f "$HOME/.claude.json" ]; then
+            mount_args+=(--mount "type=bind,source=$HOME/.claude.json,target=/devhome/.claude.json")
+        elif enabled "$CUDAQ_MOUNT_CLAUDE"; then
+            warn "requested Claude mount, but $HOME/.claude.json does not exist"
+        fi
+    fi
+
+    if ! disabled "$CUDAQ_MOUNT_CURSOR"; then
+        if [ -d "$HOME/.local/share/cursor-agent" ]; then
+            mount_args+=(--mount "type=bind,source=$HOME/.local/share/cursor-agent,target=/devhome/.local/share/cursor-agent")
+        elif enabled "$CUDAQ_MOUNT_CURSOR"; then
+            warn "requested Cursor Agent mount, but $HOME/.local/share/cursor-agent does not exist"
+        fi
+
+        if [ -d "$HOME/.config/cursor" ]; then
+            mount_args+=(--mount "type=bind,source=$HOME/.config/cursor,target=/devhome/.config/cursor")
+        elif enabled "$CUDAQ_MOUNT_CURSOR"; then
+            warn "requested Cursor config mount, but $HOME/.config/cursor does not exist"
+        fi
+    fi
+
+    if [ -d "$CUDAQ_SKILLS_REPO" ]; then
+        mount_args+=(--mount "type=bind,source=$CUDAQ_SKILLS_REPO,target=$CUDAQ_SKILLS_REPO,readonly")
+    elif should_install_bug_hunter; then
+        warn "Bug Hunter requested, but skills repo does not exist: $CUDAQ_SKILLS_REPO"
+    fi
+
+    [ -f /etc/passwd ] && mount_args+=(--mount "type=bind,source=/etc/passwd,target=/etc/passwd,readonly")
+    [ -f /etc/group ] && mount_args+=(--mount "type=bind,source=/etc/group,target=/etc/group,readonly")
+
+    local docker_gpu_args=()
+    while IFS= read -r -d '' arg; do
+        docker_gpu_args+=("$arg")
+    done < <(gpu_args)
+
+    echo ">>> docker run $name (user=$(id -u):$(id -g), repo=$container_repo)"
+    docker run -d -it \
+        --name "$name" \
+        --user "$(id -u):$(id -g)" \
+        --workdir "$container_repo" \
+        "${mount_args[@]}" \
+        -e HOME=/devhome \
+        -e CCACHE_DIR=/devccache \
+        -e CCACHE_LOGFILE=/devccache/ccache.log \
+        "${docker_gpu_args[@]}" \
+        "$CUDAQ_IMAGE" \
+        sleep infinity
+
+    docker exec "$name" bash -c '
+        if [ -d "$HOME/.local/share/cursor-agent/versions" ]; then
+            version_dir="$(
+                find "$HOME/.local/share/cursor-agent/versions" \
+                    -mindepth 1 -maxdepth 1 -type d \
+                    | sort \
+                    | tail -n 1
+            )"
+            if [ -n "$version_dir" ] && [ -x "$version_dir/cursor-agent" ]; then
+                mkdir -p "$HOME/.local/bin"
+                ln -sfn "$version_dir/cursor-agent" "$HOME/.local/bin/cursor-agent"
+                ln -sfn "$version_dir/cursor-agent" "$HOME/.local/bin/agent"
+            fi
+        fi
+    '
+
+    docker exec --user 0 "$name" install -d \
+        -o "$(id -u)" -g "$(id -g)" /usr/local/cudaq
+
+    docker exec --user 0 "$name" chown -R "$(id -u):$(id -g)" \
+        /devhome/.claude/projects 2>/dev/null || true
+
+    docker exec "$name" bash -c '
+        for directory in "$@"; do
+            git config --global --get-all safe.directory 2>/dev/null \
+                | grep -qx "$directory" \
+                || git config --global --add safe.directory "$directory"
+        done
+    ' _ "$container_repo"
+
+    if ! disabled "$CUDAQ_INSTALL_CLAUDE"; then
+        docker exec "$name" bash -c '
+            if [ ! -x "$HOME/.local/bin/claude" ]; then
+                echo "Installing Claude Code (one-time, into /devhome)..."
+                wget -qO- https://claude.ai/install.sh | bash \
+                    || echo "  Claude install failed; container is still usable."
+            fi
+            grep -qF "HOME/.local/bin" "$HOME/.bashrc" 2>/dev/null \
+                || echo "export PATH=\"\$HOME/.local/bin:\$PATH\"" >> "$HOME/.bashrc"
+        '
+    fi
+
+    if should_install_bug_hunter; then
+        if ! docker exec "$name" test -d "$CUDAQ_BUG_HUNTER_DIR"; then
+            warn "Bug Hunter dir is not visible in the container: $CUDAQ_BUG_HUNTER_DIR"
+        else
+            docker exec "$name" bash -c '
+                set -euo pipefail
+                venv="$HOME/.venvs/bug-hunter"
+                if [ ! -x "$venv/bin/python" ] && ! python3 -c "import ensurepip" >/dev/null 2>&1; then
+                    exit 42
+                fi
+            ' || {
+                if [ "$?" -eq 42 ]; then
+                    docker exec --user 0 "$name" bash -c '
+                        set -euo pipefail
+                        export DEBIAN_FRONTEND=noninteractive
+                        apt-get update
+                        apt-get install -y python3-venv
+                    '
+                else
+                    return 1
+                fi
+            }
+
+            docker exec "$name" bash -c '
+                set -euo pipefail
+                bug_hunter_dir="$1"
+                venv="$HOME/.venvs/bug-hunter"
+                if [ ! -x "$venv/bin/python" ]; then
+                    rm -rf "$venv"
+                    python3 -m venv "$venv"
+                fi
+                "$venv/bin/python" -m pip install -U pip
+                "$venv/bin/python" -m pip install -e "$bug_hunter_dir[libclang]"
+
+                if [ -f /usr/local/llvm/lib/libclang.so ]; then
+                    grep -qF "LIBCLANG_LIBRARY_FILE=/usr/local/llvm/lib/libclang.so" "$HOME/.bashrc" 2>/dev/null \
+                        || echo "export LIBCLANG_LIBRARY_FILE=/usr/local/llvm/lib/libclang.so" >> "$HOME/.bashrc"
+                    export LIBCLANG_LIBRARY_FILE=/usr/local/llvm/lib/libclang.so
+                fi
+                grep -qF "HOME/.venvs/bug-hunter/bin" "$HOME/.bashrc" 2>/dev/null \
+                    || echo "export PATH=\"\$HOME/.venvs/bug-hunter/bin:\$PATH\"" >> "$HOME/.bashrc"
+
+                "$venv/bin/python" - <<'"'"'PY'"'"' || true
+from bug_hunter.analyzers.libclang_analyzer import is_libclang_available
+
+if not is_libclang_available():
+    raise SystemExit("Bug Hunter libclang support is not available")
+PY
+            ' _ "$CUDAQ_BUG_HUNTER_DIR" || warn "Bug Hunter setup failed; container is still usable"
+        fi
+    fi
+
+    echo
+    echo "Started. Enter with: cudaq-dev enter $name"
+}
+
+cmd_enter() {
+    require_docker
+
+    local name="${1:-$CUDAQ_CONTAINER_NAME}"
+    local repo container_repo
+    repo="$(require_cudaq_repo)"
+    container_repo="$(container_repo_path "$repo")"
+
+    exec docker exec -it --workdir "$container_repo" "$name" bash
+}
+
+cmd_rm() {
+    require_docker
+
+    local name="${1:-$CUDAQ_CONTAINER_NAME}"
+    docker rm -f "$name"
+}
+
+cmd_config() {
+    local repo=""
+    repo="$(resolve_cudaq_repo 2>/dev/null || true)"
+
+    echo "config_file=$CONFIG_FILE"
+    echo "cudaq_repo=${repo:-<not found>}"
+    echo "container_repo=${CUDAQ_CONTAINER_REPO:-${repo:-<repo path>}}"
+    echo "image=$CUDAQ_IMAGE"
+    echo "base_image=$CUDAQ_BASE_IMAGE"
+    echo "dockerfile=$CUDAQ_DOCKERFILE"
+    echo "state_dir=$CUDAQ_STATE_DIR"
+    echo "skills_repo=$CUDAQ_SKILLS_REPO"
+    echo "bug_hunter_dir=$CUDAQ_BUG_HUNTER_DIR"
+    echo "gpus=$CUDAQ_DEV_GPUS"
+}
+
+cmd_doctor() {
+    echo "cudaq-dev doctor"
+    cmd_config
+    echo
+
+    if command -v docker >/dev/null 2>&1; then
+        echo "docker=$(docker --version)"
+        if docker info >/dev/null 2>&1; then
+            echo "docker_daemon=ok"
+            if docker info --format '{{json .Runtimes}}' 2>/dev/null | grep -q '"nvidia"'; then
+                echo "nvidia_runtime=ok"
+            else
+                echo "nvidia_runtime=missing"
+            fi
+            if docker image inspect "$CUDAQ_IMAGE" >/dev/null 2>&1; then
+                echo "image=$CUDAQ_IMAGE present"
+            else
+                echo "image=$CUDAQ_IMAGE missing"
+            fi
+        else
+            echo "docker_daemon=unavailable"
+        fi
+    else
+        echo "docker=missing"
+    fi
+}
+
+cmd_help() {
+    cat <<'EOF'
+cudaq-dev - manage the local CUDA-Q dev container
+
+Usage:
+  cudaq-dev build              Build the cudaq-dev image.
+  cudaq-dev up [NAME]          Start a container. Default: cudaq-dev.
+  cudaq-dev enter [NAME]       Enter the container shell.
+  cudaq-dev rm [NAME]          Remove the container.
+  cudaq-dev config             Print effective configuration.
+  cudaq-dev doctor             Check host configuration.
+  cudaq-dev help               Show this help.
+
+Machine-local config:
+  ~/.config/cudaq-dev/config
+EOF
+}
+
+case "${1:-help}" in
+    build)          shift; cmd_build "$@" ;;
+    up)             shift; cmd_up "$@" ;;
+    enter)          shift; cmd_enter "$@" ;;
+    rm)             shift; cmd_rm "$@" ;;
+    config)         shift; cmd_config "$@" ;;
+    doctor)         shift; cmd_doctor "$@" ;;
+    help|-h|--help) cmd_help ;;
+    *)              echo "Unknown subcommand: $1" >&2; cmd_help; exit 1 ;;
+esac
