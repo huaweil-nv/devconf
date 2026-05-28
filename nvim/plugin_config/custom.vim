@@ -158,7 +158,9 @@ set clipboard=unnamedplus
 
 
 set enc=utf-8
-let &termencoding=&encoding
+if exists('+termencoding')
+    let &termencoding=&encoding
+endif
 set fencs=utf-8,ucs-bom,gb18030
 set mouse=a
 set timeoutlen=500

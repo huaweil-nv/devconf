@@ -1,10 +1,6 @@
 " claudecode.nvim configuration
 
 lua << EOF
--- Claude CLI 需要代理才能访问
-vim.env.http_proxy = vim.env.http_proxy or "http://127.0.0.1:8118"
-vim.env.https_proxy = vim.env.https_proxy or "http://127.0.0.1:8118"
-
 -- 尝试加载 claudecode，如果失败则静默
 local status_ok, claudecode = pcall(require, "claudecode")
 if not status_ok then

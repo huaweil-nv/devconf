@@ -30,6 +30,19 @@ function! coc#ShowDocumentation()
     endif
 endfunction
 
+function! s:JumpDefinition() abort
+    if exists('*CocHasProvider') && get(g:, 'coc_service_initialized', 0)
+        try
+            if CocHasProvider('definition')
+                call CocActionAsync('jumpDefinition')
+                return
+            endif
+        catch
+        endtry
+    endif
+    normal! gd
+endfunction
+
 autocmd CursorHold * silent call CocActionAsync('highlight')
 
 augroup mygroup
@@ -57,8 +70,8 @@ command! -nargs=0 OR   :call     CocActionAsync('runCommand', 'editor.action.org
 nnoremap <silent><nowait> <space>ca  :<C-u>CocList diagnostics<cr>
 nnoremap <silent><nowait> <space>ce  :<C-u>CocList extensions<cr>
 nnoremap <silent><nowait> <space>cx  :<C-u>CocList commands<cr>
-nmap <silent> gd <Plug>(coc-definition)
-nmap <silent> <F12> <Plug>(coc-definition)
+nnoremap <silent> gd :<C-u>call <SID>JumpDefinition()<CR>
+nnoremap <silent> <F12> :<C-u>call <SID>JumpDefinition()<CR>
 nmap <silent> gy <Plug>(coc-type-definition)
 nmap <silent> gi <Plug>(coc-implementation)
 nmap <silent> gr <Plug>(coc-references)
@@ -81,6 +94,7 @@ let g:coc_config = []
 
 call init#AddCoc( ['coc-explorer', 'explorer.vim'])
 call init#AddCoc( ['coc-marketplace'])
+call init#AddCoc( ['coc-clangd'])
 
 for ext in g:coc_ext_table
     let g:coc_config = add(g:coc_config, ext)
@@ -101,5 +115,3 @@ for c in g:coc_config
         endif
     endif
 endfor
-
-
