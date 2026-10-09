@@ -55,16 +55,16 @@ config_cudaq(){
 
     if [ ! -f ~/.config/cudaq-dev/config ]; then
         cudaq_repo=""
-        for candidate in "$(pwd)/../cudaq-commit/cuda-quantum" "$HOME/projects/cudaq-commit/cuda-quantum" "$HOME/projects/cuda-quantum" "$HOME/cuda-quantum"; do
+        for candidate in "$(pwd)/../cudaq-commit/cuda-quantum" "$HOME/projects/cudaq-commit/cuda-quantum" "$HOME/projects/cudaq-cursor/cuda-quantum" "$HOME/projects/cuda-quantum" "$HOME/cuda-quantum"; do
             if [ -f "$candidate/docker/build/cudaq.dev.Dockerfile" ]; then
                 cudaq_repo="$(cd "$candidate" && pwd)"
                 break
             fi
         done
 
-        skills_repo='$HOME/projects/my-skills'
-        if [ -d "$HOME/projects/my-skills" ]; then
-            skills_repo="$HOME/projects/my-skills"
+        skills_repo='$HOME/projects/ai-workflow-kit'
+        if [ -d "$HOME/projects/ai-workflow-kit" ]; then
+            skills_repo="$HOME/projects/ai-workflow-kit"
         fi
 
         if [ -z "$cudaq_repo" ]; then
@@ -75,15 +75,24 @@ config_cudaq(){
 # Machine-local cudaq-dev settings. This file is intentionally not tracked.
 # Edit these paths after cloning this devconf repo on a new machine.
 
-CUDAQ_REPO="$cudaq_repo"
+CUDAQ_DEFAULT_REPO="$cudaq_repo"
 CUDAQ_SKILLS_REPO="$skills_repo"
+# false: edit ai-workflow-kit from inside the container; true: mount read-only.
+CUDAQ_SKILLS_READONLY="false"
 
-# Keep container paths compatible with the host checkout by default.
-# Set this to /workspaces/cuda-quantum if you prefer the upstream devcontainer path.
-CUDAQ_CONTAINER_REPO="\$CUDAQ_REPO"
+# Empty keeps each selected checkout at its host path inside the container.
+# Set this to /workspaces/cuda-quantum to use a fixed container path instead.
+CUDAQ_CONTAINER_REPO=""
 
 # auto: use NVIDIA Docker when available; all: force GPU; none: CPU-only host.
 CUDAQ_DEV_GPUS="auto"
+
+# auto: reuse host agent auth/config when present and install missing CLIs.
+CUDAQ_MOUNT_CLAUDE="auto"
+CUDAQ_IMPORT_CODEX_AUTH="auto"
+CUDAQ_MOUNT_CURSOR="auto"
+CUDAQ_INSTALL_CLAUDE="auto"
+CUDAQ_INSTALL_CODEX="auto"
 EOF
         echo "生成 ~/.config/cudaq-dev/config"
     fi
