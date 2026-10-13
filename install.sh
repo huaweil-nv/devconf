@@ -90,9 +90,11 @@ CUDAQ_DEV_GPUS="auto"
 # auto: reuse host agent auth/config when present and install missing CLIs.
 CUDAQ_MOUNT_CLAUDE="auto"
 CUDAQ_IMPORT_CODEX_AUTH="auto"
+CUDAQ_IMPORT_NVBUG_AUTH="auto"
 CUDAQ_MOUNT_CURSOR="auto"
 CUDAQ_INSTALL_CLAUDE="auto"
 CUDAQ_INSTALL_CODEX="auto"
+CUDAQ_INSTALL_NVBUG="auto"
 EOF
         echo "生成 ~/.config/cudaq-dev/config"
     fi

@@ -11,7 +11,9 @@
 #   CUDAQ_CONTAINER_REPO=/workspaces/cuda-quantum
 #   CUDAQ_DEV_GPUS=auto|all|none
 #   CUDAQ_IMPORT_CODEX_AUTH=auto|true|false
+#   CUDAQ_IMPORT_NVBUG_AUTH=auto|true|false
 #   CUDAQ_INSTALL_CODEX=auto|true|false
+#   CUDAQ_INSTALL_NVBUG=auto|true|false
 
 set -euo pipefail
 
@@ -41,12 +43,15 @@ fi
 : "${CUDAQ_SKILLS_REPO:=$HOME/projects/ai-workflow-kit}"
 : "${CUDAQ_SKILLS_READONLY:=false}"
 : "${CUDAQ_BUG_HUNTER_DIR:=$CUDAQ_SKILLS_REPO/tools/bug-hunter}"
+: "${CUDAQ_NVBUG_DIR:=$CUDAQ_SKILLS_REPO/tools/nvbug-cli}"
 : "${CUDAQ_MOUNT_CLAUDE:=auto}"
 : "${CUDAQ_IMPORT_CODEX_AUTH:=${CUDAQ_MOUNT_CODEX:-auto}}"
+: "${CUDAQ_IMPORT_NVBUG_AUTH:=auto}"
 : "${CUDAQ_MOUNT_CURSOR:=auto}"
 : "${CUDAQ_INSTALL_CLAUDE:=auto}"
 : "${CUDAQ_INSTALL_CODEX:=auto}"
 : "${CUDAQ_INSTALL_BUG_HUNTER:=auto}"
+: "${CUDAQ_INSTALL_NVBUG:=auto}"
 
 BUG_HUNTER_SKILLS=(
     bug-hunter-scan
@@ -185,6 +190,51 @@ should_install_bug_hunter() {
     [ -d "$CUDAQ_BUG_HUNTER_DIR" ]
 }
 
+should_install_nvbug() {
+    if enabled "$CUDAQ_INSTALL_NVBUG"; then
+        return 0
+    fi
+    if disabled "$CUDAQ_INSTALL_NVBUG"; then
+        return 1
+    fi
+    [ -d "$CUDAQ_NVBUG_DIR" ] && [ -f "$CUDAQ_SKILLS_REPO/skills/nvbug/SKILL.md" ]
+}
+
+import_nvbug_auth() {
+    disabled "$CUDAQ_IMPORT_NVBUG_AUTH" && return 0
+
+    local target_dir="$CUDAQ_STATE_DIR/home/.config/nvbug"
+    local target="$target_dir/config.json"
+    local token="${NVBUGS_PROD_TOKEN:-${NVBUGS_TOKEN:-}}"
+    mkdir -p "$target_dir"
+    chmod 700 "$target_dir"
+
+    if [ -n "$token" ]; then
+        if ! command -v python3 >/dev/null 2>&1; then
+            warn "cannot import NVBug token from the environment: host python3 is unavailable"
+            return 0
+        fi
+
+        NVBUG_CONFIG_TARGET="$target" python3 -c '
+import json
+import os
+import pathlib
+import sys
+
+target = pathlib.Path(os.environ["NVBUG_CONFIG_TARGET"])
+token = sys.stdin.read().strip()
+target.write_text(json.dumps({"token": token}) + "\n")
+target.chmod(0o600)
+' <<<"$token"
+        echo "Imported host NVBug authentication into the persistent container home."
+    elif [ -f "$HOME/.config/nvbug/config.json" ]; then
+        install -m 600 "$HOME/.config/nvbug/config.json" "$target"
+        echo "Imported host NVBug authentication into the persistent container home."
+    elif enabled "$CUDAQ_IMPORT_NVBUG_AUTH"; then
+        warn "requested NVBug auth import, but no host token or config was found"
+    fi
+}
+
 cmd_build() {
     require_docker
 
@@ -221,6 +271,7 @@ cmd_up() {
     local name="$CUDAQ_CONTAINER_NAME"
     local name_set=false
     local repo_override=""
+    local status
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --repo)
@@ -276,6 +327,8 @@ cmd_up() {
         fi
     fi
 
+    import_nvbug_auth
+
     local mount_args=(
         --mount "type=bind,source=$repo,target=$container_repo"
         --mount "type=bind,source=$CUDAQ_STATE_DIR/home,target=/devhome"
@@ -317,8 +370,8 @@ cmd_up() {
             skills_mount+=",readonly"
         fi
         mount_args+=(--mount "$skills_mount")
-    elif should_install_bug_hunter; then
-        warn "Bug Hunter requested, but skills repo does not exist: $CUDAQ_SKILLS_REPO"
+    elif should_install_bug_hunter || should_install_nvbug; then
+        warn "AI workflow tools requested, but skills repo does not exist: $CUDAQ_SKILLS_REPO"
     fi
 
     [ -f /etc/passwd ] && mount_args+=(--mount "type=bind,source=/etc/passwd,target=/etc/passwd,readonly")
@@ -576,6 +629,81 @@ PY
         fi
     fi
 
+    if should_install_nvbug; then
+        if ! docker exec "$name" test -d "$CUDAQ_NVBUG_DIR"; then
+            warn "NVBug CLI dir is not visible in the container: $CUDAQ_NVBUG_DIR"
+        elif ! docker exec "$name" test -f "$CUDAQ_SKILLS_REPO/skills/nvbug/SKILL.md"; then
+            warn "NVBug skill is not visible in the container: $CUDAQ_SKILLS_REPO/skills/nvbug"
+        else
+            docker exec "$name" bash -c '
+                set -euo pipefail
+                skill_dir="$1/skills/nvbug"
+                codex_home="${CODEX_HOME:-$HOME/.codex}"
+
+                install_skill_link() {
+                    local client="$1"
+                    local skill_link="$2"
+
+                    mkdir -p "$(dirname "$skill_link")"
+                    if [ -L "$skill_link" ] || [ ! -e "$skill_link" ]; then
+                        ln -sfn "$skill_dir" "$skill_link"
+                        echo "Installed $client skill: $skill_link -> $skill_dir"
+                    else
+                        echo "$client skill already exists and is not a symlink: $skill_link" >&2
+                    fi
+                }
+
+                install_skill_link Codex "$codex_home/skills/nvbug"
+                install_skill_link "Claude Code" "$HOME/.claude/skills/nvbug"
+                install_skill_link Cursor "$HOME/.cursor/skills/nvbug"
+            ' _ "$CUDAQ_SKILLS_REPO" \
+                || warn "NVBug skill setup failed; container is still usable"
+
+            if docker exec "$name" bash -c '
+                set -euo pipefail
+                venv="$HOME/.venvs/nvbug-cli"
+                if [ ! -x "$venv/bin/python" ] \
+                    || ! "$venv/bin/python" -m pip --version >/dev/null 2>&1; then
+                    rm -rf "$venv"
+                    python3 -m venv "$venv" || exit 42
+                fi
+            '; then
+                :
+            else
+                status="$?"
+                if [ "$status" -eq 42 ]; then
+                    docker exec --user 0 "$name" bash -c '
+                        set -euo pipefail
+                        export DEBIAN_FRONTEND=noninteractive
+                        apt-get update
+                        apt-get install -y python3-venv
+                    '
+                else
+                    warn "unable to prepare the NVBug Python environment"
+                fi
+            fi
+
+            docker exec "$name" bash -c '
+                set -euo pipefail
+                nvbug_dir="$1"
+                venv="$HOME/.venvs/nvbug-cli"
+                if [ ! -x "$venv/bin/python" ] \
+                    || ! "$venv/bin/python" -m pip --version >/dev/null 2>&1; then
+                    rm -rf "$venv"
+                    python3 -m venv "$venv"
+                fi
+                "$venv/bin/python" -m pip install -e "$nvbug_dir"
+
+                mkdir -p "$HOME/.local/bin"
+                ln -sfn "$venv/bin/nvbug" "$HOME/.local/bin/nvbug"
+                grep -qF "HOME/.local/bin" "$HOME/.bashrc" 2>/dev/null \
+                    || echo "export PATH=\"\$HOME/.local/bin:\$PATH\"" >> "$HOME/.bashrc"
+                PATH="$HOME/.local/bin:$PATH" nvbug --version
+            ' _ "$CUDAQ_NVBUG_DIR" \
+                || warn "NVBug CLI setup failed; container is still usable"
+        fi
+    fi
+
     echo
     echo "Started. Enter with: cudaq-dev enter $name"
 }
@@ -647,13 +775,16 @@ cmd_config() {
     echo "skills_repo=$CUDAQ_SKILLS_REPO"
     echo "skills_readonly=$CUDAQ_SKILLS_READONLY"
     echo "bug_hunter_dir=$CUDAQ_BUG_HUNTER_DIR"
+    echo "nvbug_dir=$CUDAQ_NVBUG_DIR"
     echo "gpus=$CUDAQ_DEV_GPUS"
     echo "mount_claude=$CUDAQ_MOUNT_CLAUDE"
     echo "import_codex_auth=$CUDAQ_IMPORT_CODEX_AUTH"
+    echo "import_nvbug_auth=$CUDAQ_IMPORT_NVBUG_AUTH"
     echo "mount_cursor=$CUDAQ_MOUNT_CURSOR"
     echo "install_claude=$CUDAQ_INSTALL_CLAUDE"
     echo "install_codex=$CUDAQ_INSTALL_CODEX"
     echo "install_bug_hunter=$CUDAQ_INSTALL_BUG_HUNTER"
+    echo "install_nvbug=$CUDAQ_INSTALL_NVBUG"
 }
 
 cmd_doctor() {
@@ -697,6 +828,19 @@ cmd_doctor() {
     else
         echo "host_codex_home=$HOME/.codex missing"
     fi
+
+    if command -v nvbug >/dev/null 2>&1; then
+        echo "host_nvbug=$(nvbug --version 2>/dev/null || echo unavailable)"
+    else
+        echo "host_nvbug=missing"
+    fi
+    if [ -n "${NVBUGS_PROD_TOKEN:-${NVBUGS_TOKEN:-}}" ]; then
+        echo "host_nvbug_auth=environment"
+    elif [ -f "$HOME/.config/nvbug/config.json" ]; then
+        echo "host_nvbug_auth=config"
+    else
+        echo "host_nvbug_auth=missing"
+    fi
 }
 
 cmd_help() {
@@ -724,7 +868,9 @@ Repository selection:
 Agent integration defaults:
   Claude Code: install in the persistent container home and reuse host auth.
   Codex CLI:   install in the persistent container home and import host auth.
+  NVBug:       install CLI and skills, and securely import host auth.
   Set CUDAQ_IMPORT_CODEX_AUTH=false for isolated container authentication.
+  Set CUDAQ_IMPORT_NVBUG_AUTH=false to keep NVBug auth out of the container.
 EOF
 }
 

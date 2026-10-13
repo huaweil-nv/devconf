@@ -49,7 +49,9 @@ CUDAQ_SKILLS_READONLY="false"
 CUDAQ_CONTAINER_REPO=""
 CUDAQ_DEV_GPUS="auto"
 CUDAQ_IMPORT_CODEX_AUTH="auto"
+CUDAQ_IMPORT_NVBUG_AUTH="auto"
 CUDAQ_INSTALL_CODEX="auto"
+CUDAQ_INSTALL_NVBUG="auto"
 ```
 
 `CUDAQ_DEFAULT_REPO` is only a fallback. When you run `build` or `up` from a
@@ -141,3 +143,24 @@ also links `bug-hunter-scan` and `bug-hunter-triage` into the container home for
 Codex, Claude Code, and Cursor. The skills repo is mounted writable by default
 so edits inside the container update the host checkout. Set
 `CUDAQ_SKILLS_READONLY="true"` to restore a read-only mount.
+
+### NVBug CLI and skill
+
+When `tools/nvbug-cli` and `skills/nvbug` exist in `CUDAQ_SKILLS_REPO`,
+`cudaq-dev up` installs the CLI into the persistent container home and links the
+skill for Codex, Claude Code, and Cursor. Both the CLI environment and skill
+links are reused by later containers.
+
+By default, NVBug authentication is imported from `NVBUGS_PROD_TOKEN`,
+`NVBUGS_TOKEN`, or `~/.config/nvbug/config.json` (in that order). Environment
+tokens are written to `/devhome/.config/nvbug/config.json` with mode `0600`;
+they are not added to the container environment and therefore are not exposed
+by `docker inspect`. Set `CUDAQ_IMPORT_NVBUG_AUTH="false"` to disable importing
+host authentication, or `CUDAQ_INSTALL_NVBUG="false"` to skip both the CLI and
+skill setup.
+
+After starting the container, verify access with:
+
+```bash
+nvbug auth status
+```
